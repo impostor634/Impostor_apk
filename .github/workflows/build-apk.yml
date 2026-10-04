@@ -12,30 +12,98 @@ jobs:
     name: Compilar y Generar APK
     runs-on: ubuntu-latest
 
+    env:
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk
+
     steps:
       - name: Descargar repositorio (Checkout)
         uses: actions/checkout@v4
 
-      - name: Configurar Node.js (v20)
+      # Paso inteligente para resolver archivos duplicados (1), (2), zips o subcarpetas
+      - name: Localizar y organizar el proyecto más reciente
+        run: |
+          python3 -c "
+          import os, glob, re, shutil, zipfile
+
+          print('=== Iniciando detección inteligente del proyecto ===')
+
+          # 1. Si se subieron archivos .zip (ej: 'el-impostor-proyecto-apk (3).zip')
+          zips = glob.glob('**/*.zip', recursive=True)
+          if zips:
+              def score_zip(z):
+                  m = re.search(r'\((\d+)\)', os.path.basename(z))
+                  return (int(m.group(1)) if m else 0, os.path.getmtime(z))
+              latest_zip = max(zips, key=score_zip)
+              print(f'-> Se detectaron zips: {zips}. Descomprimiendo el más reciente: {latest_zip}')
+              with zipfile.ZipFile(latest_zip, 'r') as zf:
+                  zf.extractall('.')
+
+          # 2. Renombrar ficheros que tengan ' (1)', ' (2)' en su nombre
+          for root, dirs, files in os.walk('.', topdown=False):
+              for f in files:
+                  m = re.match(r'^(.*?)\s*\(\d+\)(\.[^.]+)$', f)
+                  if m:
+                      clean_name = m.group(1) + m.group(2)
+                      old_path = os.path.join(root, f)
+                      new_path = os.path.join(root, clean_name)
+                      if not os.path.exists(new_path) or os.path.getmtime(old_path) >= os.path.getmtime(new_path):
+                          print(f'-> Corrigiendo nombre: {old_path} -> {new_path}')
+                          shutil.copy2(old_path, new_path)
+
+          # 3. Buscar todos los package.json en el repositorio
+          pkgs = glob.glob('**/package.json', recursive=True)
+          pkgs = [p for p in pkgs if 'node_modules' not in p]
+          print(f'-> package.json encontrados: {pkgs}')
+
+          if not pkgs:
+              print('ERROR: No se encontró ningún package.json en el repositorio')
+              exit(1)
+
+          def score_pkg(p):
+              folder = os.path.dirname(p)
+              m = re.search(r'\((\d+)\)', folder)
+              return (int(m.group(1)) if m else 0, os.path.getmtime(p))
+
+          best_pkg = max(pkgs, key=score_pkg)
+          best_dir = os.path.dirname(best_pkg)
+          print(f'-> Directorio de proyecto más reciente seleccionado: \"{best_dir}\"')
+
+          if best_dir and best_dir != '.':
+              print(f'-> Moviendo todo el contenido de {best_dir} a la raíz del repositorio...')
+              for item in os.listdir(best_dir):
+                  src = os.path.join(best_dir, item)
+                  dst = os.path.join('.', item)
+                  if os.path.isdir(src):
+                      if os.path.exists(dst):
+                          shutil.rmtree(dst)
+                      shutil.copytree(src, dst)
+                  else:
+                      shutil.copy2(src, dst)
+
+          print('=== Proyecto organizado en la raíz con éxito ===')
+          "
+
+      # Configurar Node.js (Ubuntu ya cuenta con Node, continue-on-error evita fallos de red)
+      - name: Configurar Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
-          cache: 'npm'
+          node-version: '20.x'
+        continue-on-error: true
 
       - name: Configurar JDK 17 (Java)
         uses: actions/setup-java@v4
         with:
-          distribution: 'zulu'
+          distribution: 'temurin'
           java-version: '17'
-          cache: 'gradle'
 
-      - name: Configurar Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Instalar dependencias del proyecto
+        run: |
+          echo "Node version: $(node -v)"
+          echo "NPM version: $(npm -v)"
+          npm install --legacy-peer-deps --force --no-audit --no-fund
 
-      - name: Instalar dependencias
-        run: npm install
-
-      - name: Compilar aplicación web (Vite)
+      - name: Compilar aplicación web
         run: npm run build
 
       - name: Sincronizar o crear proyecto Android
@@ -51,10 +119,10 @@ jobs:
       - name: Asignar permisos a Gradle
         run: chmod +x ./android/gradlew
 
-      - name: Compilar APK Android
+      - name: Compilar APK Android (Debug)
         run: |
           cd android
-          ./gradlew assembleDebug --stacktrace
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Subir APK como Artefacto descargable
         uses: actions/upload-artifact@v4
