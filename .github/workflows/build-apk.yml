@@ -1,0 +1,64 @@
+name: Construir APK de El Impostor
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch: # Permite compilar manualmente cuando tú quieras con un clic
+
+jobs:
+  build-apk:
+    name: Compilar y Generar APK
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Descargar repositorio (Checkout)
+        uses: actions/checkout@v4
+
+      - name: Configurar Node.js (v20)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Configurar JDK 17 (Java)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'zulu'
+          java-version: '17'
+          cache: 'gradle'
+
+      - name: Configurar Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Instalar dependencias
+        run: npm install
+
+      - name: Compilar aplicación web (Vite)
+        run: npm run build
+
+      - name: Sincronizar o crear proyecto Android
+        run: |
+          if [ ! -d "android" ]; then
+            echo "Creando estructura Android con Capacitor..."
+            npx cap add android
+          else
+            echo "Sincronizando cambios con Android..."
+            npx cap sync android
+          fi
+
+      - name: Asignar permisos a Gradle
+        run: chmod +x ./android/gradlew
+
+      - name: Compilar APK Android
+        run: |
+          cd android
+          ./gradlew assembleDebug --stacktrace
+
+      - name: Subir APK como Artefacto descargable
+        uses: actions/upload-artifact@v4
+        with:
+          name: El-Impostor-APK
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
